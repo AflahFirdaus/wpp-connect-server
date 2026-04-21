@@ -19,6 +19,27 @@ import { Request, Response } from 'express';
 import { contactToArray, unlinkAsync } from '../util/functions';
 import { clientsArray } from '../util/sessionUtil';
 
+function sanitizeResponse(data: any): any {
+  if (Array.isArray(data)) {
+    return data.map(sanitizeResponse);
+  }
+  if (data && typeof data === 'object') {
+    // Extract only essential fields to avoid circular references/massive objects
+    // Prefer serialized ID if available
+    const id = data.id?._serialized || data._serialized || data.id;
+    return {
+      id: id,
+      ack: data.ack,
+      from: data.from?._serialized || data.from,
+      to: data.to?._serialized || data.to,
+      body: data.body || data.content,
+      timestamp: data.timestamp || data.t,
+      type: data.type,
+    };
+  }
+  return data;
+}
+
 function returnSucess(res: any, session: any, phone: any, data: any) {
   res.status(201).json({
     status: 'Success',
@@ -26,19 +47,25 @@ function returnSucess(res: any, session: any, phone: any, data: any) {
       message: 'Information retrieved successfully.',
       contact: phone,
       session: session,
-      data: data,
+      data: sanitizeResponse(data),
     },
   });
 }
 
 function returnError(req: Request, res: Response, session: any, error: any) {
   req.logger.error(error);
+
+  // Sanitize error to avoid circular references
+  const errorMessage = error?.message || String(error);
+  const errorStack = error?.stack;
+
   res.status(400).json({
     status: 'Error',
     response: {
       message: 'Error retrieving information',
       session: session,
-      log: error,
+      log: errorMessage,
+      stack: errorStack,
     },
   });
 }
@@ -253,7 +280,55 @@ export async function getAllChatsWithMessages(req: Request, res: Response) {
      }
    */
   try {
-    const response = await req.client.listChats();
+    const [standardChats, chatsWithMsgs] = await Promise.all([
+      req.client.getAllChats().catch(() => []),
+      req.client.getAllChatsWithMessages().catch(() => []),
+    ]);
+
+    const chats = Array.isArray(standardChats) ? standardChats : [];
+    const msgsMap = new Map();
+
+    if (Array.isArray(chatsWithMsgs)) {
+      chatsWithMsgs.forEach((c: any) => {
+        const id = c.id?._serialized || c.id;
+        if (id) {
+          // Hanya simpan pesan terakhir yang sudah disanitasi agar tidak berat
+          const m =
+            c.lastMessage ||
+            (c.msgs && c.msgs.length > 0 ? c.msgs[c.msgs.length - 1] : null);
+          const sanitizedMsg = m
+            ? {
+                id: typeof m.id === 'object' ? m.id._serialized : m.id,
+                body: m.body,
+                content: m.content,
+                text: m.text,
+                type: m.type,
+                t: m.t,
+                timestamp: m.timestamp,
+                fromMe: m.fromMe,
+                ack: m.ack,
+                caption: m.caption,
+              }
+            : null;
+
+          msgsMap.set(id, {
+            lastMessage: sanitizedMsg,
+            msgs: sanitizedMsg ? [sanitizedMsg] : [],
+          });
+        }
+      });
+    }
+
+    const response = chats.map((chat: any) => {
+      const id = chat.id?._serialized || chat.id;
+      const msgData = msgsMap.get(id);
+      if (msgData) {
+        (chat as any).lastMessage = msgData.lastMessage;
+        (chat as any).msgs = msgData.msgs;
+      }
+      return chat;
+    });
+
     res.status(200).json({ status: 'success', response: response });
   } catch (e) {
     req.logger.error(e);
@@ -598,7 +673,7 @@ export async function deleteAllChats(req: Request, res: Response) {
      }
    */
   try {
-    const chats = await req.client.getAllChats();
+    const chats = await req.client.listChats();
     for (const chat of chats) {
       await req.client.deleteChat((chat as any).chatId);
     }
@@ -673,7 +748,7 @@ export async function clearAllChats(req: Request, res: Response) {
      }
    */
   try {
-    const chats = await req.client.getAllChats();
+    const chats = await req.client.listChats();
     for (const chat of chats) {
       await req.client.clearChat(`${(chat as any).chatId}`);
     }
@@ -747,7 +822,7 @@ export async function archiveAllChats(req: Request, res: Response) {
      }
    */
   try {
-    const chats = await req.client.getAllChats();
+    const chats = await req.client.listChats();
     for (const chat of chats) {
       await req.client.archiveChat(`${(chat as any).chatId}`, true);
     }
@@ -775,10 +850,53 @@ export async function getAllChatsArchiveds(req: Request, res: Response) {
      }
    */
   try {
-    const chats = await req.client.getAllChats();
+    const [standardChats, chatsWithMsgs] = await Promise.all([
+      req.client.getAllChats().catch(() => []),
+      req.client.getAllChatsWithMessages().catch(() => []),
+    ]);
+
+    const chats = Array.isArray(standardChats) ? standardChats : [];
+    const msgsMap = new Map();
+
+    if (Array.isArray(chatsWithMsgs)) {
+      chatsWithMsgs.forEach((c: any) => {
+        const id = c.id?._serialized || c.id;
+        if (id) {
+          const m =
+            c.lastMessage ||
+            (c.msgs && c.msgs.length > 0 ? c.msgs[c.msgs.length - 1] : null);
+          const sanitizedMsg = m
+            ? {
+                id: typeof m.id === 'object' ? m.id._serialized : m.id,
+                body: m.body,
+                content: m.content,
+                text: m.text,
+                type: m.type,
+                t: m.t,
+                timestamp: m.timestamp,
+                fromMe: m.fromMe,
+                ack: m.ack,
+                caption: m.caption,
+              }
+            : null;
+
+          msgsMap.set(id, {
+            lastMessage: sanitizedMsg,
+            msgs: sanitizedMsg ? [sanitizedMsg] : [],
+          });
+        }
+      });
+    }
+
     const archived = [] as any;
     for (const chat of chats) {
       if (chat.archive === true) {
+        const id = chat.id?._serialized || chat.id;
+        const msgData = msgsMap.get(id);
+        if (msgData) {
+          (chat as any).lastMessage = msgData.lastMessage;
+          (chat as any).msgs = msgData.msgs;
+        }
         archived.push(chat);
       }
     }
@@ -967,7 +1085,7 @@ export async function reply(req: Request, res: Response) {
 
 export async function forwardMessages(req: Request, res: Response) {
   /**
-     #swagger.tags = ["Messages"]
+   * #swagger.tags = ["Messages"]
      #swagger.autoBody=false
      #swagger.security = [{
             "bearerAuth": []
@@ -992,7 +1110,7 @@ export async function forwardMessages(req: Request, res: Response) {
               value: {
                 phone: "5521999999999",
                 isGroup: false,
-                messageId: "<messageId>",
+                messageId: "<message_id>",
               }
             },
           }
@@ -1001,22 +1119,72 @@ export async function forwardMessages(req: Request, res: Response) {
      }
    */
   const { phone, messageId, isGroup = false } = req.body;
+  const session = req.params.session;
+
+  if (!messageId) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'Parameter messageId is required!' });
+  }
 
   try {
-    let response;
+    const contacts = Array.isArray(phone) ? phone : [phone];
+    const results: any = [];
 
-    if (!isGroup) {
-      response = await req.client.forwardMessagesV2(`${phone[0]}`, messageId);
-    } else {
-      response = await req.client.forwardMessagesV2(`${phone[0]}`, messageId);
+    const client = req.client as any;
+    const page = client.page || (client.client && client.client.page);
+
+    for (let targetPhone of contacts) {
+      if (typeof targetPhone === 'string' && !targetPhone.includes('@')) {
+        targetPhone = isGroup ? `${targetPhone}@g.us` : `${targetPhone}@c.us`;
+      }
+
+      let result;
+      if (page) {
+        // Menggunakan fungsi forward native dari wa-js (WPPConnect)
+        result = await page.evaluate(
+          async (to: string, msgId: string) => {
+            try {
+              // @ts-ignore
+              if (typeof WPP === 'undefined')
+                throw new Error('WPP library not found in browser');
+
+              // WPP.chat.forwardMessages biasanya mengharapkan array ID pesan
+              const ids = Array.isArray(msgId) ? msgId : [msgId];
+
+              // --- Resilience: Pastikan pesan asli ter-load (untuk pesan lama/kemarin) ---
+              try {
+                // @ts-ignore
+                await WPP.chat.getMessageById(msgId);
+              } catch (e) {
+                console.warn(
+                  `[Forward] Message ${msgId} not found in store, attempting anyway...`
+                );
+              }
+
+              // @ts-ignore
+              await WPP.chat.find(to);
+
+              // @ts-ignore
+              const res = await WPP.chat.forwardMessages(to, ids);
+              return { success: true, to, res };
+            } catch (err: any) {
+              return { success: false, to, error: err.message || err };
+            }
+          },
+          targetPhone,
+          messageId
+        );
+      } else {
+        // Fallback jika browser tidak ada
+        result = await req.client.forwardMessage(targetPhone, [messageId]);
+      }
+      results.push(result);
     }
 
-    res.status(201).json({ status: 'success', response: response });
-  } catch (e) {
-    req.logger.error(e);
-    res
-      .status(500)
-      .json({ status: 'error', message: 'Error forwarding message', error: e });
+    returnSucess(res, session, phone, results);
+  } catch (e: any) {
+    returnError(req, res, session, e);
   }
 }
 
@@ -1966,20 +2134,45 @@ export async function getProfilePicFromServer(req: Request, res: Response) {
       schema: '5521999999999'
      }
    */
-  const { phone = true } = req.params;
-  const { isGroup = false } = req.query;
+  const { phone } = req.params;
+  const isGroup = req.query.isGroup === 'true';
+
+  if (!phone) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'Nomor telepon diperlukan' });
+  }
+
   try {
-    let response;
-    for (const contato of contactToArray(phone as string, isGroup as boolean)) {
-      response = await req.client.getProfilePicFromServer(contato);
+    const client = req.client as any;
+    // Bersihkan format nomor (tambahkan @c.us jika belum ada)
+    const contato = phone.includes('@')
+      ? phone
+      : isGroup
+      ? `${phone}@g.us`
+      : `${phone}@c.us`;
+
+    // Ambil foto profil
+    const response = await client.getProfilePicFromServer(contato);
+
+    // Jika response kosong, biasanya karena privasi user
+    if (
+      !response ||
+      (typeof response === 'object' && !response.eurl && !response.tag)
+    ) {
+      return res.status(200).json({
+        status: 'success',
+        response: null,
+        message: 'Foto tidak tersedia atau dibatasi privasi',
+      });
     }
 
-    res.status(200).json({ status: 'success', response: response });
+    return res.status(200).json({ status: 'success', response: response });
   } catch (error) {
     req.logger.error(error);
     res.status(500).json({
       status: 'error',
-      message: 'Error on  get profile pic',
+      message: 'Gagal mengambil foto profil',
       error: error,
     });
   }

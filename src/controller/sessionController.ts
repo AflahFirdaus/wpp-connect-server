@@ -130,7 +130,7 @@ export async function startAllSessions(
   const allSessions = await getAllTokens(req);
 
   if (tokenDecrypt !== req.serverOptions.secretKey) {
-    res.status(400).json({
+    return res.status(400).json({
       response: 'error',
       message: 'The token is incorrect',
     });
@@ -177,7 +177,7 @@ export async function showAllSessions(
   const arr: any = [];
 
   if (tokenDecrypt !== req.serverOptions.secretKey) {
-    res.status(400).json({
+    return res.status(400).json({
       response: false,
       message: 'The token is incorrect',
     });
@@ -395,38 +395,51 @@ export async function downloadMediaByMessage(req: Request, res: Response) {
   const client = req.client;
   const { messageId } = req.body;
 
-  let message;
-
+  let message: any;
   try {
-    if (!messageId.isMedia || !messageId.type) {
-      message = await client.getMessageById(messageId);
+    if (typeof messageId === 'string') {
+      try {
+        message = await client.getMessageById(messageId);
+      } catch (err: any) {
+        req.logger.error(
+          `Error retrieving message ${messageId}: ${err.message}`
+        );
+        return res.status(404).json({
+          status: 'error',
+          message:
+            'Message not found or too old to be retrieved from this session.',
+          error: err.message,
+        });
+      }
     } else {
       message = messageId;
     }
 
-    if (!message)
-      res.status(400).json({
+    if (!message) {
+      return res.status(400).json({
         status: 'error',
         message: 'Message not found',
       });
+    }
 
-    if (!(message['mimetype'] || message.isMedia || message.isMMS))
-      res.status(400).json({
+    if (!(message['mimetype'] || message.isMedia || message.isMMS)) {
+      return res.status(400).json({
         status: 'error',
         message: 'Message does not contain media',
       });
+    }
 
     const buffer = await client.decryptFile(message);
 
-    res
+    return res
       .status(200)
       .json({ base64: buffer.toString('base64'), mimetype: message.mimetype });
-  } catch (e) {
+  } catch (e: any) {
     req.logger.error(e);
-    res.status(400).json({
+    return res.status(400).json({
       status: 'error',
       message: 'Decrypt file error',
-      error: e,
+      error: e.message || e,
     });
   }
 }
@@ -450,31 +463,40 @@ export async function getMediaByMessage(req: Request, res: Response) {
   const { messageId } = req.params;
 
   try {
-    const message = await client.getMessageById(messageId);
+    const message = await client.getMessageById(messageId).catch((err: any) => {
+      req.logger.error(
+        `Error retrieving message ${messageId} in getMediaByMessage: ${err.message}`
+      );
+      return null;
+    });
 
-    if (!message)
-      res.status(400).json({
+    if (!message) {
+      return res.status(404).json({
         status: 'error',
-        message: 'Message not found',
+        message:
+          'Message not found or too old to be retrieved from this session.',
       });
+    }
 
-    if (!(message['mimetype'] || message.isMedia || message.isMMS))
-      res.status(400).json({
+    if (!(message['mimetype'] || message.isMedia || message.isMMS)) {
+      return res.status(400).json({
         status: 'error',
         message: 'Message does not contain media',
       });
+    }
 
     const buffer = await client.decryptFile(message);
 
-    res
+    return res
       .status(200)
       .json({ base64: buffer.toString('base64'), mimetype: message.mimetype });
-  } catch (ex) {
+  } catch (ex: any) {
     req.logger.error(ex);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
-      message: 'The session is not active',
-      error: ex,
+      message:
+        'The session is not active or an error occurred during media retrieval',
+      error: ex.message || ex,
     });
   }
 }

@@ -40,21 +40,21 @@ export default {
     daysToArchive: 45,
   },
   log: {
-    level: 'silly', // Before open a issue, change level to silly and retry a action
+    level: 'info', // Mengurangi beban I/O dibanding 'silly'
     logger: ['console', 'file'],
   },
   createOptions: {
     browserArgs: [
       '--disable-web-security',
       '--no-sandbox',
-      '--disable-web-security',
       '--aggressive-cache-discard',
       '--disable-cache',
       '--disable-application-cache',
       '--disable-offline-load-stale-cache',
       '--disk-cache-size=0',
-      '--disable-background-networking',
-      '--disable-default-apps',
+      '--js-flags="--max-old-space-size=512"', // Batasi penggunaan RAM per browser
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
       '--disable-extensions',
       '--disable-sync',
       '--disable-dev-shm-usage',
@@ -65,9 +65,9 @@ export default {
       '--mute-audio',
       '--no-first-run',
       '--safebrowsing-disable-auto-update',
-      '--ignore-certificate-errors',
-      '--ignore-ssl-errors',
-      '--ignore-certificate-errors-spki-list',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu',
     ],
     /**
      * Example of configuring the linkPreview generator

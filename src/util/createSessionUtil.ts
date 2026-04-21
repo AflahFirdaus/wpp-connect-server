@@ -281,9 +281,38 @@ export default class CreateSessionUtil {
   }
 
   async listenMessages(client: WhatsAppServer, req: Request) {
+    // Helper untuk menipiskan payload pesan (Data Thinning)
+    const thinMessage = (m: any) => {
+      if (!m) return null;
+      return {
+        id: m.id?._serialized || m.id,
+        body: m.body,
+        content: m.content,
+        text: m.text,
+        caption: m.caption,
+        type: m.type,
+        t: m.t,
+        timestamp: m.timestamp,
+        fromMe: m.fromMe,
+        from: m.from,
+        to: m.to,
+        chatId: m.chatId?._serialized || m.chatId,
+        ack: m.ack,
+        isGroup: m.isGroup,
+        participant: m.participant,
+      };
+    };
+
     await client.onMessage(async (message: any) => {
       eventEmitter.emit(`mensagem-${client.session}`, client, message);
       callWebHook(client, req, 'onmessage', message);
+
+      // Emit ke socket dengan payload tipis
+      req.io.emit('onmessage', {
+        session: client.session,
+        data: thinMessage(message),
+      });
+
       if (message.type === 'location')
         client.onLiveLocation(message.sender.id, (location) => {
           callWebHook(client, req, 'location', location);
@@ -304,7 +333,10 @@ export default class CreateSessionUtil {
         await autoDownload(client, req, message);
       }
 
-      req.io.emit('received-message', { response: message });
+      req.io.emit('received-message', {
+        session: client.session,
+        response: thinMessage(message),
+      });
       if (req.serverOptions.webhook.onSelfMessage && message.fromMe)
         callWebHook(client, req, 'onselfmessage', message);
     });
@@ -317,14 +349,25 @@ export default class CreateSessionUtil {
 
   async listenAcks(client: WhatsAppServer, req: Request) {
     await client.onAck(async (ack) => {
-      req.io.emit('onack', ack);
+      req.io.emit('onack', { session: client.session, data: ack });
       callWebHook(client, req, 'onack', ack);
     });
   }
 
+  private lastPresenceEmit = new Map<string, number>();
+
   async onPresenceChanged(client: WhatsAppServer, req: Request) {
-    await client.onPresenceChanged(async (presenceChangedEvent) => {
-      req.io.emit('onpresencechanged', presenceChangedEvent);
+    await client.onPresenceChanged(async (presenceChangedEvent: any) => {
+      // Throttling di sisi server: Jangan kirim update kehadiran terlalu sering untuk kontak yang sama
+      const key = `${client.session}-${presenceChangedEvent.id}`;
+      const now = Date.now();
+      if (now - (this.lastPresenceEmit.get(key) || 0) < 2000) return;
+
+      this.lastPresenceEmit.set(key, now);
+      req.io.emit('onpresencechanged', {
+        session: client.session,
+        data: presenceChangedEvent,
+      });
       callWebHook(client, req, 'onpresencechanged', presenceChangedEvent);
     });
   }

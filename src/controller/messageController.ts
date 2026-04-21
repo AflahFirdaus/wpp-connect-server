@@ -20,15 +20,46 @@ import { unlinkAsync } from '../util/functions';
 
 function returnError(req: Request, res: Response, error: any) {
   req.logger.error(error);
+
+  // Sanitize error to avoid circular references
+  const errorMessage = error?.message || String(error);
+  const errorStack = error?.stack;
+
   res.status(500).json({
     status: 'Error',
     message: 'Erro ao enviar a mensagem.',
-    error: error,
+    error: errorMessage,
+    stack: errorStack,
   });
 }
 
+function sanitizeResponse(data: any): any {
+  if (Array.isArray(data)) {
+    return data.map(sanitizeResponse);
+  }
+  if (data && typeof data === 'object') {
+    // Extract only essential fields to avoid circular references/massive objects
+    // Prefer serialized ID if available
+    const id = data.id?._serialized || data._serialized || data.id;
+    return {
+      id: id,
+      ack: data.ack,
+      from: data.from?._serialized || data.from,
+      to: data.to?._serialized || data.to,
+      body: data.body || data.content,
+      timestamp: data.timestamp || data.t,
+      type: data.type,
+    };
+  }
+  return data;
+}
+
 async function returnSucess(res: any, data: any) {
-  res.status(201).json({ status: 'success', response: data, mapper: 'return' });
+  res.status(201).json({
+    status: 'success',
+    response: sanitizeResponse(data),
+    mapper: 'return',
+  });
 }
 
 export async function sendMessage(req: Request, res: Response) {
@@ -91,19 +122,158 @@ export async function sendMessage(req: Request, res: Response) {
      }
    */
   const { phone, message } = req.body;
-
   const options = req.body.options || {};
 
   try {
-    const results: any = [];
-    for (const contato of phone) {
-      results.push(await req.client.sendText(contato, message, options));
+    if (!req.client) {
+      return res
+        .status(401)
+        .json({ status: 'Error', message: 'Sesi WhatsApp tidak aktif.' });
     }
 
-    if (results.length === 0) res.status(400).json('Error sending message');
+    const results: any = [];
+    const contacts = Array.isArray(phone) ? phone : [phone];
+
+    for (const contact of contacts) {
+      // Pemanggilan paling dasar yang dijamin stabil
+      results.push(await req.client.sendText(contact, message, options));
+    }
+
     req.io.emit('mensagem-enviada', results);
     returnSucess(res, results);
   } catch (error) {
+    returnError(req, res, error);
+  }
+}
+
+export async function replyMessage(req: Request, res: Response) {
+  /**
+   * #swagger.tags = ["Messages"]
+     #swagger.autoBody=false
+     #swagger.security = [{
+            "bearerAuth": []
+     }]
+     #swagger.parameters["session"] = {
+      schema: 'NERDWHATS_AMERICA'
+     }
+    #swagger.requestBody = {
+      required: true,
+      "@content": {
+        "application/json": {
+          schema: {
+            type: "object",
+            properties: {
+              "phone": { type: "string" },
+              "isGroup": { type: "boolean" },
+              "message": { type: "string" },
+              "messageId": { type: "string" }
+            }
+          },
+          examples: {
+            "Default": {
+              value: {
+                "phone": "5521999999999",
+                "isGroup": false,
+                "message": "Reply to message",
+                "messageId": "<id_message>"
+              }
+            }
+          }
+        }
+      }
+    }
+   */
+  const { phone, message, messageId } = req.body;
+  console.log(
+    `[Reply] Incoming request for session: ${req.params.session}, to: ${phone}, messageId: ${messageId}`
+  );
+
+  try {
+    const results: any = [];
+    const contacts = Array.isArray(phone) ? phone : [phone];
+
+    for (const contato of contacts) {
+      try {
+        console.log(`[Reply] Attempting library reply to ${contato}...`);
+        results.push(await req.client.reply(contato, message, messageId));
+      } catch (replyError: any) {
+        console.warn(
+          '[Reply Fallback] client.reply() failed:',
+          replyError.message || replyError,
+          '- Using direct page.evaluate...'
+        );
+
+        const client = req.client as any;
+        const page = client.page || (client.client && client.client.page);
+
+        if (!page) {
+          console.error(
+            '[Reply Fallback] ERROR: Could not find "page" object on client.'
+          );
+          throw replyError;
+        }
+
+        const result: any = await page.evaluate(
+          async function (to: string, content: string, qId: string) {
+            try {
+              // @ts-ignore
+              if (typeof WPP === 'undefined') {
+                return {
+                  erro: true,
+                  text: 'WPP is not defined in browser context',
+                };
+              }
+              // @ts-ignore
+              const chat = await WPP.chat.find(to);
+              let qMsg = null;
+              if (chat && chat.msgs) {
+                const arr = chat.msgs._models || chat.msgs.models || [];
+                qMsg = arr.find(
+                  (m: any) =>
+                    m.id._serialized === qId ||
+                    (m.id.id && qId.includes(m.id.id))
+                );
+              }
+
+              // Fallback: Try to find the message by ID if not in recent list
+              if (!qMsg) {
+                try {
+                  // @ts-ignore
+                  qMsg = await WPP.chat.getMessageById(qId);
+                } catch (e) {}
+              }
+
+              const opts: any = { waitForAck: true };
+              if (qMsg) {
+                opts.quotedMsg = qMsg;
+              }
+              // @ts-ignore
+              const r = await WPP.chat.sendTextMessage(to, content, opts);
+              return { ack: r.ack, id: r.id };
+            } catch (err: any) {
+              return { erro: true, text: err.message || String(err) };
+            }
+          },
+          contato,
+          message,
+          messageId
+        );
+
+        if (result && result.erro) {
+          console.error(
+            `[Reply Fallback] page.evaluate failed: ${result.text}`
+          );
+          throw new Error(result.text);
+        }
+        results.push(result);
+      }
+    }
+
+    if (results.length === 0) res.status(400).json('Error sending message');
+    req.io.emit('mensagem-enviada', { message: message, to: phone });
+    returnSucess(res, results);
+  } catch (error) {
+    console.error(`[Reply] Final catch-all ERROR:`, error);
     returnError(req, res, error);
   }
 }
@@ -210,6 +380,20 @@ export async function sendFile(req: Request, res: Response) {
 
   const options = req.body.options || {};
 
+  // Hardening Forwarded Metadata
+  if (
+    req.body.forwarded ||
+    req.body.isForwarded ||
+    options.forwarded ||
+    options.isForwarded
+  ) {
+    options.isForwarded = true;
+    options.forwardingScore = (options.forwardingScore || 0) + 1;
+    if (!options.contextInfo) options.contextInfo = {};
+    options.contextInfo.isForwarded = true;
+    options.contextInfo.forwardingScore = options.forwardingScore;
+  }
+
   if (!path && !req.file && !base64)
     res.status(401).send({
       message: 'Sending the file is mandatory',
@@ -221,14 +405,90 @@ export async function sendFile(req: Request, res: Response) {
   try {
     const results: any = [];
     for (const contact of phone) {
-      results.push(
-        await req.client.sendFile(contact, pathFile, {
-          filename: filename,
-          caption: msg,
-          quotedMsg: quotedMessageId,
-          ...options,
-        })
-      );
+      try {
+        results.push(
+          await req.client.sendFile(contact, pathFile, {
+            filename: filename,
+            caption: msg,
+            quotedMsg: quotedMessageId,
+            ...options,
+          })
+        );
+      } catch (fileError: any) {
+        console.error(
+          `[File Reply] client.sendFile() FAILED:`,
+          fileError?.message || fileError
+        );
+
+        if (quotedMessageId) {
+          console.log(
+            `[File Reply Fallback] Attempting fallback for ${contact}...`
+          );
+          const client = req.client as any;
+          const page = client.page || (client.client && client.client.page);
+
+          if (page) {
+            const result = await page.evaluate(
+              async (
+                to: string,
+                qId: string,
+                b64: string,
+                fname: string,
+                cap: string
+              ) => {
+                try {
+                  // @ts-ignore
+                  const chat = await WPP.chat.find(to);
+                  let qMsg = null;
+                  if (chat && chat.msgs) {
+                    const arr = chat.msgs._models || chat.msgs.models || [];
+                    qMsg = arr.find(
+                      (m: any) =>
+                        m.id._serialized === qId ||
+                        (m.id.id && qId.includes(m.id.id))
+                    );
+                  }
+
+                  if (!qMsg) {
+                    try {
+                      // @ts-ignore
+                      qMsg = await WPP.chat.getMessageById(qId);
+                    } catch (e) {}
+                  }
+
+                  // @ts-ignore
+                  const r = await WPP.chat.sendFileMessage(to, b64, {
+                    type: 'auto-detect',
+                    filename: fname,
+                    caption: cap,
+                    quotedMsg: qMsg || undefined,
+                    waitForAck: true,
+                    isForwarded: true,
+                    forwarded: true,
+                    forwardingScore: 1,
+                    contextInfo: { isForwarded: true, forwardingScore: 1 },
+                  });
+                  return { ack: r.ack, id: r.id };
+                } catch (err: any) {
+                  return { erro: true, text: err.message || String(err) };
+                }
+              },
+              contact,
+              quotedMessageId,
+              pathFile, // pathFile is the base64 or path
+              filename,
+              msg
+            );
+
+            if (!result?.erro) {
+              results.push(result);
+              continue;
+            }
+            console.error(`[File Reply Fallback] Failed: ${result.text}`);
+          }
+        }
+        throw fileError;
+      }
     }
 
     if (results.length === 0) res.status(400).json('Error sending message');
@@ -287,15 +547,72 @@ export async function sendVoice(req: Request, res: Response) {
   try {
     const results: any = [];
     for (const contato of phone) {
-      results.push(
-        await req.client.sendPtt(
-          contato,
-          path,
-          filename,
-          message,
-          quotedMessageId
-        )
-      );
+      try {
+        results.push(
+          await req.client.sendPtt(
+            contato,
+            path,
+            filename,
+            message,
+            quotedMessageId
+          )
+        );
+      } catch (voiceError: any) {
+        console.error(
+          `[Voice Reply] sendPtt() FAILED:`,
+          voiceError?.message || voiceError
+        );
+        if (quotedMessageId) {
+          const client = req.client as any;
+          const page = client.page || (client.client && client.client.page);
+          if (page) {
+            console.log(
+              `[Voice Reply Fallback] Attempting fallback for ${contato}...`
+            );
+            const result = await page.evaluate(
+              async (to: string, qId: string, p: string) => {
+                try {
+                  // @ts-ignore
+                  const chat = await WPP.chat.find(to);
+                  let qMsg = null;
+                  if (chat && chat.msgs) {
+                    const arr = chat.msgs._models || chat.msgs.models || [];
+                    qMsg = arr.find(
+                      (m: any) =>
+                        m.id._serialized === qId ||
+                        (m.id.id && qId.includes(m.id.id))
+                    );
+                  }
+                  if (!qMsg) {
+                    try {
+                      // @ts-ignore
+                      qMsg = await WPP.chat.getMessageById(qId);
+                    } catch (e) {}
+                  }
+                  // @ts-ignore
+                  const r = await WPP.chat.sendFileMessage(to, p, {
+                    type: 'audio',
+                    isPtt: true,
+                    quotedMsg: qMsg || undefined,
+                    waitForAck: true,
+                  });
+                  return { ack: r.ack, id: r.id };
+                } catch (err: any) {
+                  return { erro: true, text: err.message || String(err) };
+                }
+              },
+              contato,
+              quotedMessageId,
+              path // This is the path or base64
+            );
+            if (!result?.erro) {
+              results.push(result);
+              continue;
+            }
+          }
+        }
+        throw voiceError;
+      }
     }
 
     if (results.length === 0) res.status(400).json('Error sending message');
@@ -324,7 +641,8 @@ export async function sendVoice64(req: Request, res: Response) {
                     properties: {
                         "phone": { type: "string" },
                         "isGroup": { type: "boolean" },
-                        "base64Ptt": { type: "string" }
+                        "base64Ptt": { type: "string" },
+                        "quotedMessageId": { type: "string" }
                     }
                 },
                 examples: {
@@ -332,7 +650,8 @@ export async function sendVoice64(req: Request, res: Response) {
                         value: {
                             "phone": "5521999999999",
                             "isGroup": false,
-                            "base64Ptt": "<base64_string>"
+                            "base64Ptt": "<base64_string>",
+                            "quotedMessageId": "message Id"
                         }
                     }
                 }
@@ -345,15 +664,72 @@ export async function sendVoice64(req: Request, res: Response) {
   try {
     const results: any = [];
     for (const contato of phone) {
-      results.push(
-        await req.client.sendPttFromBase64(
-          contato,
-          base64Ptt,
-          'Voice Audio',
-          '',
-          quotedMessageId
-        )
-      );
+      try {
+        results.push(
+          await req.client.sendPttFromBase64(
+            contato,
+            base64Ptt,
+            'Voice Audio',
+            '',
+            quotedMessageId
+          )
+        );
+      } catch (voiceError: any) {
+        console.error(
+          `[Voice64 Reply] sendPttFromBase64() FAILED:`,
+          voiceError?.message || voiceError
+        );
+        if (quotedMessageId) {
+          const client = req.client as any;
+          const page = client.page || (client.client && client.client.page);
+          if (page) {
+            console.log(
+              `[Voice64 Reply Fallback] Attempting fallback for ${contato}...`
+            );
+            const result = await page.evaluate(
+              async (to: string, qId: string, b64: string) => {
+                try {
+                  // @ts-ignore
+                  const chat = await WPP.chat.find(to);
+                  let qMsg = null;
+                  if (chat && chat.msgs) {
+                    const arr = chat.msgs._models || chat.msgs.models || [];
+                    qMsg = arr.find(
+                      (m: any) =>
+                        m.id._serialized === qId ||
+                        (m.id.id && qId.includes(m.id.id))
+                    );
+                  }
+                  if (!qMsg) {
+                    try {
+                      // @ts-ignore
+                      qMsg = await WPP.chat.getMessageById(qId);
+                    } catch (e) {}
+                  }
+                  // @ts-ignore
+                  const r = await WPP.chat.sendFileMessage(to, b64, {
+                    type: 'audio',
+                    isPtt: true,
+                    quotedMsg: qMsg || undefined,
+                    waitForAck: true,
+                  });
+                  return { ack: r.ack, id: r.id };
+                } catch (err: any) {
+                  return { erro: true, text: err.message || String(err) };
+                }
+              },
+              contato,
+              quotedMessageId,
+              base64Ptt
+            );
+            if (!result?.erro) {
+              results.push(result);
+              continue;
+            }
+          }
+        }
+        throw voiceError;
+      }
     }
 
     if (results.length === 0) res.status(400).json('Error sending message');
@@ -801,59 +1177,6 @@ export async function sendStatusText(req: Request, res: Response) {
     results.push(await req.client.sendText('status@broadcast', message));
 
     if (results.length === 0) res.status(400).json('Error sending message');
-    returnSucess(res, results);
-  } catch (error) {
-    returnError(req, res, error);
-  }
-}
-
-export async function replyMessage(req: Request, res: Response) {
-  /**
-   * #swagger.tags = ["Messages"]
-     #swagger.autoBody=false
-     #swagger.security = [{
-            "bearerAuth": []
-     }]
-     #swagger.parameters["session"] = {
-      schema: 'NERDWHATS_AMERICA'
-     }
-     #swagger.requestBody = {
-      required: true,
-      "@content": {
-        "application/json": {
-          schema: {
-            type: "object",
-            properties: {
-              "phone": { type: "string" },
-              "isGroup": { type: "boolean" },
-              "message": { type: "string" },
-              "messageId": { type: "string" }
-            }
-          },
-          examples: {
-            "Default": {
-              value: {
-                "phone": "5521999999999",
-                "isGroup": false,
-                "message": "Reply to message",
-                "messageId": "<id_message>"
-              }
-            }
-          }
-        }
-      }
-    }
-   */
-  const { phone, message, messageId } = req.body;
-
-  try {
-    const results: any = [];
-    for (const contato of phone) {
-      results.push(await req.client.reply(contato, message, messageId));
-    }
-
-    if (results.length === 0) res.status(400).json('Error sending message');
-    req.io.emit('mensagem-enviada', { message: message, to: phone });
     returnSucess(res, results);
   } catch (error) {
     returnError(req, res, error);

@@ -52,28 +52,43 @@ export function contactToArray(
   const localArr: any = [];
   if (Array.isArray(number)) {
     for (let contact of number) {
+      // Jika contact sudah berisi suffix (@c.us, @g.us, dll), anggap sudah valid
+      if (typeof contact === 'string' && contact.includes('@')) {
+        localArr.push(contact);
+        continue;
+      }
+
       isGroup || isNewsletter
         ? (contact = contact.split('@')[0])
         : (contact = contact.split('@')[0]?.replace(/[^\w ]/g, ''));
-      if (contact !== '')
-        if (isGroup) (localArr as any).push(`${contact}@g.us`);
-        else if (isNewsletter) (localArr as any).push(`${contact}@newsletter`);
-        else if (isLid || contact.length > 14)
-          (localArr as any).push(`${contact}@lid`);
-        else (localArr as any).push(`${contact}@c.us`);
+
+      if (contact !== '') {
+        if (isGroup) localArr.push(`${contact}@g.us`);
+        else if (isNewsletter) localArr.push(`${contact}@newsletter`);
+        else if (isLid || contact.length > 15) localArr.push(`${contact}@lid`);
+        else localArr.push(`${contact}@c.us`);
+      }
     }
   } else {
     const arrContacts = number.split(/\s*[,;]\s*/g);
     for (let contact of arrContacts) {
+      // Jika contact sudah berisi suffix (@c.us, @g.us, dll), anggap sudah valid
+      if (typeof contact === 'string' && contact.includes('@')) {
+        localArr.push(contact);
+        continue;
+      }
+
       isGroup || isNewsletter
         ? (contact = contact.split('@')[0])
         : (contact = contact.split('@')[0]?.replace(/[^\w ]/g, ''));
-      if (contact !== '')
+
+      if (contact !== '') {
         if (isGroup) (localArr as any).push(`${contact}@g.us`);
         else if (isNewsletter) (localArr as any).push(`${contact}@newsletter`);
-        else if (isLid || contact.length > 14)
+        else if (isLid || contact.length > 15)
           (localArr as any).push(`${contact}@lid`);
         else (localArr as any).push(`${contact}@c.us`);
+      }
     }
   }
 
@@ -280,7 +295,7 @@ async function archive(client: any, req: any) {
   req.logger.info(`${client.session} : Inicio arquivando chats`);
 
   try {
-    let chats = await client.getAllChats();
+    let chats = await client.listChats();
     if (chats && Array.isArray(chats) && chats.length > 0) {
       chats = chats.filter((c) => !c.archive);
     }
