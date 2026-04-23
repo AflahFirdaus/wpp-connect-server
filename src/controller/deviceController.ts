@@ -1506,13 +1506,15 @@ export async function getLastSeen(req: Request, res: Response) {
     const response = await req.client.getLastSeen(`${phone}@c.us`);
 
     res.status(200).json({ status: 'success', response: response });
-  } catch (error) {
-    req.logger.error(error);
-    res.status(500).json({
-      status: 'error',
-      response: 'Error on get chat last seen',
-      error: error,
-    });
+  } catch (error: any) {
+    req.logger.error(`Error on getLastSeen: ${error?.message || error}`);
+    if (!res.headersSent) {
+      res.status(500).json({
+        status: 'error',
+        response: 'Error on get chat last seen',
+        error: error?.message || error,
+      });
+    }
   }
 }
 
