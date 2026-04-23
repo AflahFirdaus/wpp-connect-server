@@ -104,7 +104,7 @@ export async function setProfileName(req: Request, res: Response) {
   const { name } = req.body;
 
   if (!name)
-    res
+    return res
       .status(400)
       .json({ status: 'error', message: 'Parameter name is required!' });
 
@@ -1412,7 +1412,7 @@ export async function setProfilePic(req: Request, res: Response) {
       }
    */
   if (!req.file)
-    res
+    return res
       .status(400)
       .json({ status: 'Error', message: 'File parameter is required!' });
 
@@ -1503,13 +1503,14 @@ export async function getLastSeen(req: Request, res: Response) {
    */
   const { phone } = req.params;
   try {
-    const response = await req.client.getLastSeen(`${phone}@c.us`);
+    const contato = phone.includes('@') ? phone : `${phone}@c.us`;
+    const response = await req.client.getLastSeen(contato);
 
-    res.status(200).json({ status: 'success', response: response });
+    return res.status(200).json({ status: 'success', response: response });
   } catch (error: any) {
     req.logger.error(`Error on getLastSeen: ${error?.message || error}`);
     if (!res.headersSent) {
-      res.status(500).json({
+      return res.status(500).json({
         status: 'error',
         response: 'Error on get chat last seen',
         error: error?.message || error,
