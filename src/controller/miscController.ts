@@ -151,24 +151,37 @@ export async function clearSessionData(req: Request, res: Response) {
     const { secretkey, session } = req.params;
 
     if (secretkey !== config.secretKey) {
-      res.status(400).json({
+      return res.status(400).json({
         response: 'error',
         message: 'The token is incorrect',
       });
     }
     if (req?.client?.page) {
       delete clientsArray[req.params.session];
-      await req.client.logout();
+      try {
+        await req.client.logout();
+      } catch (e) {
+        logger.warn(`Could not logout session ${session}: ${e}`);
+      }
     }
     const path = config.customUserDataDir + session;
     const pathToken = __dirname + `../../../tokens/${session}.data.json`;
+
     if (fs.existsSync(path)) {
       await fs.promises.rm(path, {
         recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 1000,
       });
     }
     if (fs.existsSync(pathToken)) {
-      await fs.promises.rm(pathToken);
+      await fs.promises.rm(pathToken, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 1000,
+      });
     }
     res.status(200).json({ success: true });
   } catch (error: any) {
@@ -176,7 +189,7 @@ export async function clearSessionData(req: Request, res: Response) {
     res.status(500).json({
       status: false,
       message: 'Error on clear session data',
-      error: error,
+      error: error?.message || error,
     });
   }
 }
