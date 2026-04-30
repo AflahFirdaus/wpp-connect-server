@@ -67,8 +67,8 @@ export default {
       '--safebrowsing-disable-auto-update',
       '--no-zygote',
       '--single-process',
-      '--disable-gpu',
     ],
+    headless: true,
     /**
      * Example of configuring the linkPreview generator
      * If you set this to 'null', it will use global servers; however, you have the option to define your own server

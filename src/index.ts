@@ -79,18 +79,34 @@ export function initServer(serverOptions: Partial<ServerOptions>): {
     const oldSend = res.send;
 
     res.send = async function (data: any) {
-      const content = req.headers['content-type'];
-      if (content == 'application/json') {
-        data = JSON.parse(data);
-        if (!data.session) data.session = req.client ? req.client.session : '';
-        if (data.mapper && req.serverOptions.mapper.enable) {
-          data.response = await convert(
-            req.serverOptions.mapper.prefix,
-            data.response,
-            data.mapper
-          );
-          delete data.mapper;
+      try {
+        const contentType = res.getHeader('content-type');
+        if (
+          contentType &&
+          typeof contentType === 'string' &&
+          contentType.includes('application/json') &&
+          typeof data === 'string'
+        ) {
+          try {
+            let jsonData = JSON.parse(data);
+            if (!jsonData.session)
+              jsonData.session = req.client ? req.client.session : '';
+
+            if (jsonData.mapper && req.serverOptions.mapper.enable) {
+              jsonData.response = await convert(
+                req.serverOptions.mapper.prefix,
+                jsonData.response,
+                jsonData.mapper
+              );
+              delete jsonData.mapper;
+            }
+            data = JSON.stringify(jsonData);
+          } catch (parseError) {
+            // If parsing fails, just use original data
+          }
         }
+      } catch (e) {
+        req.logger.error('Error in res.send monkey-patch:', e);
       }
       res.send = oldSend;
       return res.send(data);
@@ -141,3 +157,12 @@ please set the log to 'silly', copy the log that shows the error and open your i
     logger,
   };
 }
+
+// Global error handling to prevent service from stopping
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception thrown:', err);
+});

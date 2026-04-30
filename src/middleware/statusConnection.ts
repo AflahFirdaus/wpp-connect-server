@@ -68,12 +68,28 @@ export default async function statusConnection(
       });
     }
     next();
-  } catch (error) {
-    req.logger.error(error);
-    return res.status(404).json({
-      response: null,
-      status: 'Disconnected',
-      message: 'A sessão do WhatsApp não está ativa.',
-    });
+  } catch (error: any) {
+    req.logger.error(`Error in statusConnection: ${error?.message || error}`);
+
+    // Handle detached frame or browser crash
+    const isBrowserCrash =
+      error?.message?.includes('detached Frame') ||
+      error?.message?.includes('Protocol error') ||
+      error?.message?.includes('Target closed');
+
+    if (isBrowserCrash) {
+      req.logger.warn(
+        'Browser crash detected in statusConnection, marking session as disconnected'
+      );
+    }
+
+    if (!res.headersSent) {
+      return res.status(404).json({
+        response: null,
+        status: 'Disconnected',
+        message:
+          'A sessão do WhatsApp caiu ou o browser foi fechado. Por favor, reinicie a sessão.',
+      });
+    }
   }
 }
