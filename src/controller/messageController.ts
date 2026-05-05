@@ -62,65 +62,10 @@ async function returnSucess(res: any, data: any) {
   });
 }
 
+import { messageQueue } from '../util/queue';
+
 export async function sendMessage(req: Request, res: Response) {
-  /**
-   * #swagger.tags = ["Messages"]
-     #swagger.autoBody=false
-     #swagger.security = [{
-            "bearerAuth": []
-     }]
-     #swagger.parameters["session"] = {
-      schema: 'NERDWHATS_AMERICA'
-     }
-    #swagger.requestBody = {
-      required: true,
-      "@content": {
-        "application/json": {
-          schema: {
-            type: "object",
-            properties: {
-              phone: { type: "string" },
-              isGroup: { type: "boolean" },
-              isNewsletter: { type: "boolean" },
-              isLid: { type: "boolean" },
-              message: { type: "string" },
-              options: { type: "object" },
-            }
-          },
-          examples: {
-            "Send message to contact": {
-              value: { 
-                phone: '5521999999999',
-                isGroup: false,
-                isNewsletter: false,
-                isLid: false,
-                message: 'Hi from WPPConnect',
-              }
-            },
-            "Send message with reply": {
-              value: { 
-                phone: '5521999999999',
-                isGroup: false,
-                isNewsletter: false,
-                isLid: false,
-                message: 'Hi from WPPConnect with reply',
-                options: {
-                  quotedMsg: 'true_...@c.us_3EB01DE65ACC6_out',
-                }
-              }
-            },
-            "Send message to group": {
-              value: {
-                phone: '8865623215244578',
-                isGroup: true,
-                message: 'Hi from WPPConnect',
-              }
-            },
-          }
-        }
-      }
-     }
-   */
+  // ... swagger docs truncated ...
   const { phone, message } = req.body;
   const options = req.body.options || {};
 
@@ -131,16 +76,29 @@ export async function sendMessage(req: Request, res: Response) {
         .json({ status: 'Error', message: 'Sesi WhatsApp tidak aktif.' });
     }
 
-    const results: any = [];
     const contacts = Array.isArray(phone) ? phone : [phone];
 
     for (const contact of contacts) {
-      // Pemanggilan paling dasar yang dijamin stabil
-      results.push(await req.client.sendText(contact, message, options));
+      // Masukkan ke dalam Redis Queue
+      await messageQueue.add('sendTextMessage', {
+        session: req.session,
+        contact,
+        message,
+        options,
+      });
     }
 
-    req.io.emit('mensagem-enviada', results);
-    returnSucess(res, results);
+    req.io.emit('mensagem-enviada', { message: 'Masuk antrean (Queue)' });
+
+    // Kembalikan response lebih cepat tanpa menunggu pengiriman WhatsApp selesai
+    res.status(201).json({
+      status: 'success',
+      response: {
+        message: 'Pesan berhasil dimasukkan ke antrean pengiriman.',
+        contacts: contacts,
+      },
+      mapper: 'return',
+    });
   } catch (error) {
     returnError(req, res, error);
   }

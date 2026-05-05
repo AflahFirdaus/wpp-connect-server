@@ -129,6 +129,8 @@ export function groupNameToArray(group: any) {
   return localArr;
 }
 
+import { webhookQueue } from './queue';
+
 export async function callWebHook(
   client: any,
   req: Request,
@@ -148,27 +150,21 @@ export async function callWebHook(
     if (req.serverOptions.webhook.autoDownload)
       await autoDownload(client, req, data);
     try {
-      const chatId =
-        data.from ||
-        data.chatId ||
-        (data.chatId ? data.chatId._serialized : null);
       data = Object.assign({ event: event, session: client.session }, data);
       if (req.serverOptions.mapper.enable)
         data = await convert(req.serverOptions.mapper.prefix, data);
-      api
-        .post(webhook, data)
-        .then(() => {
-          try {
-            const events = ['unreadmessages', 'onmessage'];
-            if (events.includes(event) && req.serverOptions.webhook.readMessage)
-              client.sendSeen(chatId);
-          } catch (e) {}
-        })
-        .catch((e) => {
-          req.logger.warn('Error calling Webhook.', e);
-        });
+
+      // Tambahkan payload webhook ke antrean Redis untuk diproses di background worker
+      // Ini akan mencegah thread Node.js utama menjadi lambat akibat koneksi I/O ke URL Webhook
+      await webhookQueue.add('sendWebhook', {
+        webhookUrl: webhook,
+        data,
+        event,
+        session: client.session,
+        readMessage: req.serverOptions?.webhook?.readMessage || false,
+      });
     } catch (e) {
-      req.logger.error(e);
+      req.logger.error('Error saat menambahkan webhook ke Queue:', e);
     }
   }
 }
