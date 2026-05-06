@@ -9,6 +9,7 @@ module.exports = {
       max_memory_restart: '1G', // Restart otomatis jika memori Node.js menyentuh 1 GB
       env: {
         NODE_ENV: 'production',
+        DISPLAY: '',
       },
     },
   ],
